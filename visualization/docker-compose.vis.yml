@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-vis
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: traffic_warning
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - traffic-warning-system_traffic-net
+
+  flask-backend:
+    build: ./backend
+    container_name: flask-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mysql
+    volumes:
+      - ./frontend:/app/frontend   # 新增：挂载前端文件
+    networks:
+      - traffic-warning-system_traffic-net
+
+volumes:
+  mysql-data:
+
+networks:
+  traffic-warning-system_traffic-net:
+    external: true   # 使用已有的外部网络

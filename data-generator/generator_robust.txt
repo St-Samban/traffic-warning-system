@@ -1,0 +1,24 @@
+import json
+import time
+import random
+from kafka import KafkaProducer
+
+# Kafka 连接配置（使用宿主机映射端口 29092）
+producer = KafkaProducer(
+    bootstrap_servers='localhost:29092',
+    value_serializer=lambda v: json.dumps(v).encode('utf-8')
+)
+
+# 模拟 5 个路口
+INTERSECTION_IDS = [1, 2, 3, 4, 5]
+
+while True:
+    record = {
+        'intersectionId': random.choice(INTERSECTION_IDS),
+        'avgSpeed': round(random.uniform(0, 80), 2),   # 速度 0~80 km/h
+        'vehicleCount': random.randint(0, 50),         # 车流量 0~50 辆
+        'timestamp': int(time.time() * 1000)           # 毫秒时间戳
+    }
+    producer.send('traffic-raw', value=record)
+    print(f"Sent: {record}")
+    time.sleep(1)   # 每秒发送一条

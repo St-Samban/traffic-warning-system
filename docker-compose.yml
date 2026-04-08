@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    restart: unless-stopped
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      # 修复：使用 ZOOKEEPER_HEAP_OPTS 控制 JVM 堆内存（原错误使用 KAFKA_HEAP_OPTS）
+      ZOOKEEPER_HEAP_OPTS: "-Xmx512m -Xms512m"
+    mem_limit: 512m
+    cpus: 0.5
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    networks:
+      - traffic-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"      # 内部监听端口（容器间通信）
+      - "29092:29092"    # 外部监听端口（宿主机访问）
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # 关键修复：配置内外网分离监听器
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # 其他必要配置
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # 内存限制
+      KAFKA_HEAP_OPTS: "-Xmx1g -Xms1g"
+    mem_limit: 1.5g
+    cpus: 1.0
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - traffic-net
+
+  jobmanager:
+    image: flink:1.18.1-scala_2.12
+    container_name: jobmanager
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      # 修复：使用正确格式的多行配置，并预留内存余量
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 900m   # 容器限制 1g，留 100m 余量
+    mem_limit: 1g
+    cpus: 0.5
+    networks:
+      - traffic-net
+
+  taskmanager:
+    image: flink:1.18.1-scala_2.12
+    container_name: taskmanager
+    restart: unless-stopped
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.memory.process.size: 1300m  # 容器限制 1.5g，留 200m 余量
+        taskmanager.numberOfTaskSlots: 2
+    mem_limit: 1.5g
+    cpus: 1.0
+    networks:
+      - traffic-net
+
+volumes:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-data:
+
+networks:
+  traffic-net:
+    driver: bridge

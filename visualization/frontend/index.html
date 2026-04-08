@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>交通拥堵实时预警大屏</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+    <style>
+        body { font-family: Arial; margin: 20px; background: #f0f2f5; }
+        .container { display: flex; flex-wrap: wrap; gap: 20px; }
+        .chart { flex: 2; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .list { flex: 1; background: white; padding: 15px; border-radius: 8px; overflow-y: auto; max-height: 600px; }
+        .warning-item { border-bottom: 1px solid #eee; padding: 8px 0; }
+        .severe { color: red; font-weight: bold; }
+        .risky { color: orange; }
+        h2 { margin-top: 0; }
+    </style>
+</head>
+<body>
+    <h1>智慧城市交通拥堵实时预警系统</h1>
+    <div class="container">
+        <div class="chart">
+            <h2>最近10分钟预警趋势（按等级）</h2>
+            <div id="trendChart" style="height: 400px;"></div>
+        </div>
+        <div class="list">
+            <h2>最新预警消息</h2>
+            <div id="warningList"></div>
+        </div>
+    </div>
+
+    <script>
+        var socket = io();
+        // 存储最近10分钟的预警记录（用于图表）
+        var severeCounts = [];
+        var riskyCounts = [];
+        var timeLabels = [];
+
+        // 初始化图表
+        var chart = echarts.init(document.getElementById('trendChart'));
+        var option = {
+            tooltip: { trigger: 'axis' },
+            legend: { data: ['严重拥堵 (severe)', '风险 (risky)'] },
+            xAxis: { type: 'category', data: timeLabels },
+            yAxis: { type: 'value', name: '预警次数' },
+            series: [
+                { name: '严重拥堵 (severe)', type: 'line', data: severeCounts, smooth: true, lineStyle: { color: 'red' } },
+                { name: '风险 (risky)', type: 'line', data: riskyCounts, smooth: true, lineStyle: { color: 'orange' } }
+            ]
+        };
+        chart.setOption(option);
+
+        // 更新图表：保留最近10分钟数据（每分钟一个点）
+        function updateChart(level, timestamp) {
+            var now = new Date();
+            var minuteLabel = now.getHours() + ':' + now.getMinutes();
+            // 简单实现：如果标签变了则增加新点，否则累加
+            if (timeLabels.length === 0 || timeLabels[timeLabels.length-1] !== minuteLabel) {
+                timeLabels.push(minuteLabel);
+                severeCounts.push(0);
+                riskyCounts.push(0);
+                // 只保留最近10个点
+                if (timeLabels.length > 10) {
+                    timeLabels.shift();
+                    severeCounts.shift();
+                    riskyCounts.shift();
+                }
+            }
+            if (level === 'severe') severeCounts[severeCounts.length-1]++;
+            else if (level === 'risky') riskyCounts[riskyCounts.length-1]++;
+            chart.setOption({
+                xAxis: { data: timeLabels },
+                series: [
+                    { data: severeCounts },
+                    { data: riskyCounts }
+                ]
+            });
+        }
+
+        // 接收 WebSocket 消息
+        socket.on('new_warning', function(data) {
+            console.log('Received warning:', data);   // 新增调试输出
+            // 更新列表
+            var listDiv = document.getElementById('warningList');
+            var item = document.createElement('div');
+            item.className = 'warning-item';
+            var levelClass = data.level === 'severe' ? 'severe' : 'risky';
+            item.innerHTML = `<span class="${levelClass}">[${data.level.toUpperCase()}]</span> 
+                              路段 ${data.segmentId} (${data.grade}) 
+                              速度 ${data.avgSpeed} km/h 
+                              车辆数 ${data.totalVehicles} 
+                              ${new Date(data.windowStart).toLocaleTimeString()}`;
+            listDiv.insertBefore(item, listDiv.firstChild);
+            // 保持最多20条
+            while (listDiv.children.length > 20) listDiv.removeChild(listDiv.lastChild);
+
+            // 更新图表
+            updateChart(data.level, data.timestamp);
+        });
+    </script>
+</body>
+</html>

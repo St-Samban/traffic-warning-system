@@ -1,0 +1,121 @@
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.connectors.kafka import FlinkKafkaConsumer, FlinkKafkaProducer
+from pyflink.common.serialization import SimpleStringSchema
+from pyflink.common.watermark_strategy import WatermarkStrategy, TimestampAssigner
+from pyflink.common.time import Duration, Time
+from pyflink.datastream.window import TumblingEventTimeWindows
+from pyflink.datastream.functions import ProcessWindowFunction
+import json
+from datetime import datetime
+import os
+os.environ['PYFLINK_PYTHON'] = '/usr/bin/python3'
+
+env = StreamExecutionEnvironment.get_execution_environment()
+env.set_parallelism(1)
+env.set_python_executable("/usr/bin/python3")
+
+# 添加Kafka连接器JAR
+current_dir = os.path.dirname(os.path.abspath(__file__))
+jar_path = f"file://{current_dir}/flink-sql-connector-kafka-1.17.2.jar"
+env.add_jars(jar_path)
+
+# 关键修复1：显式指定类型信息，避免自动序列化器生成
+from pyflink.common.typeinfo import Types
+
+
+class MyTimestampAssigner(TimestampAssigner):
+    def extract_timestamp(self, value, record_timestamp):
+        return value[3]  # timestamp字段
+
+
+class AvgSpeedWindowFunction(ProcessWindowFunction):
+    def process(self, key, context, elements):
+        # 关键修复2：将迭代器转换为列表前先确定大小
+        elements_list = list(elements)
+        speeds = [e[1] for e in elements_list]
+        avg_speed = sum(speeds) / len(speeds) if speeds else 0.0
+        total_vehicles = sum(e[2] for e in elements_list)
+        window_start = context.window().start
+        window_end = context.window().end
+        # 关键修复3：返回明确的POJO结构（使用tuple）
+        yield (key, avg_speed, total_vehicles, window_start, window_end)
+
+
+def main():
+    # 配置Kafka消费者
+    kafka_consumer = FlinkKafkaConsumer(
+        topics='traffic-raw',
+        deserialization_schema=SimpleStringSchema(),
+        properties={
+            'bootstrap.servers': 'localhost:29092',
+            'group.id': 'flink-group',
+            'auto.offset.reset': 'latest'
+        }
+    )
+
+    # 数据源
+    data_stream = env.add_source(kafka_consumer)
+
+    # 解析JSON
+    def parse_json(line):
+        try:
+            data = json.loads(line)
+            # 关键修复4：返回元组而非任意对象，元组有稳定的序列化器
+            return (data['intersectionId'], data['avgSpeed'], data['vehicleCount'], data['timestamp'])
+        except:
+            return None
+
+    parsed_stream = data_stream.map(parse_json).filter(lambda x: x is not None)
+
+    # 关键修复5：显式指定返回类型
+    parsed_stream = parsed_stream.map(lambda x: x, output_type=Types.TUPLE([
+        Types.INT(), Types.DOUBLE(), Types.INT(), Types.LONG()
+    ]))
+
+    # 水印策略
+    watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(5)) \
+        .with_timestamp_assigner(MyTimestampAssigner())
+
+    with_timestamps = parsed_stream.assign_timestamps_and_watermarks(watermark_strategy)
+
+    # 按路口分组
+    keyed_stream = with_timestamps.key_by(lambda x: x[0])
+
+    # 10秒滚动窗口
+    windowed_stream = keyed_stream.window(TumblingEventTimeWindows.of(Time.seconds(10))) \
+        .process(AvgSpeedWindowFunction(),
+                 output_type=Types.TUPLE([Types.INT(), Types.DOUBLE(), Types.INT(), Types.LONG(), Types.LONG()]))
+
+    # 预警规则
+    def check_warning(row):
+        intersection_id, avg_speed, total_vehicles, window_start, window_end = row
+        if avg_speed < 20 and total_vehicles > 10:
+            warning_msg = {
+                'intersectionId': intersection_id,
+                'avgSpeed': round(avg_speed, 2),
+                'vehicleCount': total_vehicles,
+                'windowStart': window_start,
+                'windowEnd': window_end,
+                'warning': '拥堵预警',
+                'timestamp': datetime.now().isoformat()
+            }
+            return json.dumps(warning_msg)
+        return None
+
+    warning_stream = windowed_stream.map(check_warning).filter(lambda x: x is not None) \
+        .map(lambda x: x, output_type=Types.STRING())
+
+    # 输出到Kafka
+    kafka_producer = FlinkKafkaProducer(
+        topic='traffic-warning',
+        serialization_schema=SimpleStringSchema(),
+        producer_config={'bootstrap.servers': 'localhost:29092'}
+    )
+    warning_stream.add_sink(kafka_producer)
+    warning_stream.print()
+
+    env.execute("Traffic Warning Job")
+
+
+if __name__ == "__main__":
+    main()

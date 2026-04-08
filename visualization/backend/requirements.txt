@@ -1,0 +1,9 @@
+Flask==2.2.5
+flask-socketio==5.3.6
+python-socketio==5.7.2
+python-engineio==4.3.4
+kafka-python==2.0.2
+pymysql==1.1.0
+eventlet==0.33.3
+Werkzeug==2.2.3
+cryptography==41.0.7
